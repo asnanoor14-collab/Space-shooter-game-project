@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="Space shooter game project/Space shooter game project.vcxproj" />
+  <Project Path="Space shooter game project/Space shooter game project.vcxproj" Id="d2c67d35-1159-4f92-811a-8e83f88a94f2" />
 </Solution>
