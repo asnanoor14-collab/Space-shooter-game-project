@@ -60,6 +60,99 @@ struct Effect { Vector2 pos; float age; bool active; Color color; };
 
 enum GameScreen { MENU, INSTRUCTIONS, HIGH_SCORE, PLAYING, PAUSED, LEVEL_COMPLETE, GAME_OVER, YOU_WIN };
 
+// --- Audio Globals ---
+// Tracks:
+//   0 -> game1,2,3.ogg (Levels 1-3)
+//   1 -> game4,5,6.ogg (Levels 4-6)
+//   2 -> game7,8,9.ogg (Levels 7-9)
+//   3 -> game10.ogg    (Level 10)
+//   bossMusic     -> boss.ogg      (Plays continuously while boss is active)
+//   gameClashMusic-> gameclash.ogg (Game Over)
+static constexpr int LEVEL_MUSIC_COUNT = 4;
+Music levelMusic[LEVEL_MUSIC_COUNT]{};
+Music bossMusic{};
+Music gameClashMusic{};
+bool audioReady = false;
+GameScreen prevAudioScreen = MENU;
+int prevAudioLevel = -1;
+bool prevBossActive = false;
+
+int musicIndexForLevel(int lv) {
+    if (lv <= 3) return 0;
+    if (lv <= 6) return 1;
+    if (lv <= 9) return 2;
+    return 3;
+}
+
+void initAudio() {
+    SetTraceLogLevel(LOG_WARNING);
+    InitAudioDevice();
+    if (!IsAudioDeviceReady()) return;
+    audioReady = true;
+
+    const char* levelFiles[LEVEL_MUSIC_COUNT] = {
+        "game1,2,3.ogg",
+        "game4,5,6.ogg",
+        "game7,8,9.ogg",
+        "game10.ogg"
+    };
+
+    for (int i = 0; i < LEVEL_MUSIC_COUNT; ++i) {
+        levelMusic[i] = LoadMusicStream(levelFiles[i]);
+        levelMusic[i].looping = true;
+        SetMusicVolume(levelMusic[i], 0.80f);
+    }
+
+    bossMusic = LoadMusicStream("boss.ogg");
+    bossMusic.looping = true;
+    SetMusicVolume(bossMusic, 0.88f);
+
+    gameClashMusic = LoadMusicStream("gameclash.ogg");
+    gameClashMusic.looping = true;
+    SetMusicVolume(gameClashMusic, 0.95f);
+}
+
+void unloadAudio() {
+    if (!audioReady) return;
+    for (int i = 0; i < LEVEL_MUSIC_COUNT; ++i) {
+        UnloadMusicStream(levelMusic[i]);
+    }
+    UnloadMusicStream(bossMusic);
+    UnloadMusicStream(gameClashMusic);
+    CloseAudioDevice();
+    audioReady = false;
+}
+
+void stopAllLevelMusicExcept(int keepIndex) {
+    for (int i = 0; i < LEVEL_MUSIC_COUNT; ++i) {
+        if (i != keepIndex && IsMusicStreamPlaying(levelMusic[i])) {
+            StopMusicStream(levelMusic[i]);
+        }
+    }
+}
+
+void stopAllMusic() {
+    if (!audioReady) return;
+    for (int i = 0; i < LEVEL_MUSIC_COUNT; ++i) {
+        if (IsMusicStreamPlaying(levelMusic[i])) {
+            StopMusicStream(levelMusic[i]);
+        }
+    }
+    if (IsMusicStreamPlaying(bossMusic)) {
+        StopMusicStream(bossMusic);
+    }
+    if (IsMusicStreamPlaying(gameClashMusic)) {
+        StopMusicStream(gameClashMusic);
+    }
+}
+
+void startOrResumeMusic(Music& m) {
+    if (!IsMusicStreamPlaying(m)) {
+        PlayMusicStream(m);
+    }
+    ResumeMusicStream(m);
+}
+
 Player player{};
 Bullet bullets[MAX_BULLETS]{};
 EnemyBullet enemyBullets[MAX_ENEMY_BULLETS]{};
@@ -95,6 +188,82 @@ float spawnTimer = 0.0f;
 float aidTimer = AID_NORMAL_DELAY;
 float gameTime = 0.0f;       // advances only while the game is actually running (not paused)
 int lastLevelReached = 1;
+
+void updateAudio(GameScreen currentScreen, int currentLevel) {
+    if (!audioReady) return;
+
+    int activeIdx = musicIndexForLevel(currentLevel);
+    Music& targetLevelTrack = levelMusic[activeIdx];
+    bool bossActiveNow = (currentScreen == PLAYING && specialAlive);
+
+    bool screenChanged = (currentScreen != prevAudioScreen);
+    bool musicGroupChanged = (prevAudioLevel < 0) || (musicIndexForLevel(currentLevel) != musicIndexForLevel(prevAudioLevel));
+    bool bossStateChanged = (bossActiveNow != prevBossActive);
+
+    if (currentScreen == PLAYING) {
+        if (IsMusicStreamPlaying(gameClashMusic)) {
+            StopMusicStream(gameClashMusic);
+        }
+
+        if (bossActiveNow) {
+            if (bossStateChanged || screenChanged) {
+                stopAllLevelMusicExcept(-1);
+                SeekMusicStream(bossMusic, 0.0f);
+                PlayMusicStream(bossMusic);
+                ResumeMusicStream(bossMusic);
+            }
+            UpdateMusicStream(bossMusic);
+        }
+        else {
+            if (IsMusicStreamPlaying(bossMusic)) {
+                StopMusicStream(bossMusic);
+            }
+            if (screenChanged || musicGroupChanged || bossStateChanged) {
+                stopAllLevelMusicExcept(activeIdx);
+                startOrResumeMusic(targetLevelTrack);
+            }
+            else if (!IsMusicStreamPlaying(targetLevelTrack)) {
+                PlayMusicStream(targetLevelTrack);
+            }
+            UpdateMusicStream(targetLevelTrack);
+        }
+    }
+    else if (currentScreen == PAUSED || currentScreen == LEVEL_COMPLETE) {
+        if (screenChanged) {
+            if (prevBossActive && IsMusicStreamPlaying(bossMusic)) {
+                PauseMusicStream(bossMusic);
+            }
+            else if (IsMusicStreamPlaying(targetLevelTrack)) {
+                PauseMusicStream(targetLevelTrack);
+            }
+        }
+    }
+    else if (currentScreen == GAME_OVER) {
+        if (screenChanged) {
+            stopAllLevelMusicExcept(-1);
+            if (IsMusicStreamPlaying(bossMusic)) {
+                StopMusicStream(bossMusic);
+            }
+            SeekMusicStream(gameClashMusic, 0.0f);
+            PlayMusicStream(gameClashMusic);
+            ResumeMusicStream(gameClashMusic);
+        }
+        else if (!IsMusicStreamPlaying(gameClashMusic)) {
+            PlayMusicStream(gameClashMusic);
+        }
+        UpdateMusicStream(gameClashMusic);
+    }
+    else {
+        // MENU, INSTRUCTIONS, HIGH_SCORE, YOU_WIN
+        if (screenChanged) {
+            stopAllMusic();
+        }
+    }
+
+    prevAudioScreen = currentScreen;
+    prevAudioLevel = currentLevel;
+    prevBossActive = bossActiveNow;
+}
 
 // Filled triangle that works whatever the vertex order is.
 void fillTri(Vector2 a, Vector2 b, Vector2 c, Color color) {
@@ -203,6 +372,7 @@ bool wasRectPressed(Rectangle r) {
             }
         }
     }
+    prevTouches = touches;
     return triggered;
 }
 
@@ -505,7 +675,10 @@ void drawGenericEnemy(const Enemy& e) {
         DrawPoly(Vector2{ x, y }, 8, 19, 0, c);
         for (int i = 0; i < 8; ++i) {
             float a = i * PI / 4.0f;
-            fillTri(Vector2{ x + cosf(a) * 17, y + sinf(a) * 17 }, Vector2{ x + cosf(a - 0.25f) * 34, y + sinf(a - 0.25f) * 34 }, Vector2{ x + cosf(a + 0.25f) * 34, y + sinf(a + 0.25f) * 34 }, Color{ 75, 190, 255, 255 });
+            float ca = cosf(a), sa = sinf(a);
+            float cl = cosf(a - 0.25f), sl = sinf(a - 0.25f);
+            float cr = cosf(a + 0.25f), sr = sinf(a + 0.25f);
+            fillTri(Vector2{ x + ca * 17, y + sa * 17 }, Vector2{ x + cl * 34, y + sl * 34 }, Vector2{ x + cr * 34, y + sr * 34 }, Color{ 75, 190, 255, 255 });
         }
         DrawCircle((int)x, (int)y, 9, LIME);
     }
@@ -569,10 +742,12 @@ void drawBackground(float dt, bool inGame, int lv) {
     else {
         DrawCircleGradient(Vector2{ SCREEN_W / 2.0f, 250.0f }, 320, Fade(nebula, 0.20f), Fade(base, 0));
     }
+    float t = (float)GetTime() * 2.2f;
+    float starSpeedScale = (screen == MENU ? 0.55f : 1.0f) * dt;
     for (auto& s : stars) {
-        s.pos.y += s.speed * dt * (screen == MENU ? 0.55f : 1.0f);
+        s.pos.y += s.speed * starSpeedScale;
         if (s.pos.y > SCREEN_H) { s.pos.y = 0; s.pos.x = (float)GetRandomValue(0, SCREEN_W); }
-        float pulse = 0.50f + 0.50f * sinf((float)GetTime() * 2.2f + s.twinkle);
+        float pulse = 0.50f + 0.50f * sinf(t + s.twinkle);
         Color starCol = (s.layer == 2) ? Color{ 210, 235, 255, 255 } : WHITE;
         DrawCircleV(s.pos, s.radius, Fade(starCol, pulse));
     }
@@ -753,10 +928,11 @@ void drawEffects() {
     for (auto& fx : effects) if (fx.active) {
         float r = 8 + fx.age * 65;
         float alpha = std::clamp(1.0f - fx.age / 0.55f, 0.0f, 1.0f);
-        DrawCircleLines((int)fx.pos.x, (int)fx.pos.y, r, Fade(fx.color, alpha));
+        Color col = Fade(fx.color, alpha);
+        DrawCircleLines((int)fx.pos.x, (int)fx.pos.y, r, col);
         for (int i = 0; i < 7; ++i) {
             float a = i * PI * 2 / 7.0f;
-            DrawCircle((int)(fx.pos.x + cosf(a) * r), (int)(fx.pos.y + sinf(a) * r), 3, Fade(fx.color, alpha));
+            DrawCircle((int)(fx.pos.x + cosf(a) * r), (int)(fx.pos.y + sinf(a) * r), 3, col);
         }
     }
 }
@@ -984,6 +1160,7 @@ void updateGame(float dt) {
         screen = GAME_OVER;
         lastLevelReached = level;
         recordRunScore();
+        updateAudio(screen, level);
     }
     else if (score - levelStartScore >= targetForLevel(level) && !specialAlive) {
         screen = LEVEL_COMPLETE;
@@ -1249,6 +1426,7 @@ void drawEndScreen(const char* title, int reached) {
 int main() {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
     InitWindow(SCREEN_W, SCREEN_H, "Space Shooter - Raylib Edition");
+    initAudio();
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
     SetRandomSeed((unsigned int)time(nullptr));
@@ -1260,6 +1438,8 @@ int main() {
 
     while (!WindowShouldClose()) {
         float dt = std::min(GetFrameTime(), 0.05f);
+        updateAudio(screen, level);
+
         int touches = GetTouchPointCount();
         bool newTouchOrClick = IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || (touches > prevTouches);
 
@@ -1344,6 +1524,7 @@ int main() {
     }
 
     saveHighScore();
+    unloadAudio();
     CloseWindow();
     return 0;
 }
